@@ -38,6 +38,9 @@ void compute_pml_mesh_data(Mesh *mesh);
 void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &Eval);
 void E_bdr_data_Re(const Vector &x, Vector &E);
 void E_bdr_data_Im(const Vector &x, Vector &E);
+void E_exact_Re(const Vector &x, Vector &E);
+void E_exact_Im(const Vector &x, Vector &E);
+
 
 void source_im(const Vector &x, Vector &f_im);
 
@@ -59,6 +62,8 @@ enum prob_type
 {
    load_src,
    scatter,
+   lshape,
+   fichera,
    waveguide,
    cyl_waveguide
 };
@@ -73,12 +78,13 @@ int main(int argc, char *argv[])
    MPI_Comm_rank(MPI_COMM_WORLD, &myid);
 
    // 2. Parse command-line options.
-   const char *mesh_file = "../../data/beam-tet.mesh";
+   const char *mesh_file = "../data/beam-tet.mesh";
    int order = 1;
    bool visualization = 1;
    double freq = 1.0;
    int ref_levels = 1;
    int par_ref_levels = 1;
+   int iprob = 0;
    OptionsParser args(argc, argv);
    args.AddOption(&mesh_file, "-m", "--mesh",
                   "Mesh file to use.");
@@ -86,6 +92,8 @@ int main(int argc, char *argv[])
                   "Finite element order (polynomial degree).");
    args.AddOption(&freq, "-f", "--frequency", "Set the frequency for the exact"
                                               " solution.");
+   args.AddOption(&iprob, "-prob", "--problem", "Problem case"
+                  " 0: General, 1: scatter, 2: lshape, 3: fichera, 4: waveguide, 5: Circular waveguide.");                                           
    args.AddOption(&ref_levels, "-rs", "--refinements-serial",
                   "Number of serial refinements");
    args.AddOption(&par_ref_levels, "-rp", "--refinements-parallel",
@@ -114,10 +122,11 @@ int main(int argc, char *argv[])
    //    and volume meshes with the same code.
 
    Mesh *mesh;
-    prob = scatter;
+   prob = (prob_type)iprob;
+   //  prob = scatter;
    // prob = waveguide;
    // prob = cyl_waveguide;
-    prob = load_src;
+   //  prob = load_src;
 
    if (prob == load_src)
    {
@@ -142,22 +151,29 @@ int main(int argc, char *argv[])
       // mesh_file= "hollow_cyl.mesh";
       mesh = new Mesh(mesh_file, 1, 1);
    }
+   else if (prob == lshape)
+   {
+      mesh_file = "l-shape.mesh";
+      mesh = new Mesh(mesh_file, 1, 1);
+   }
+   else if (prob == fichera)
+   {
+      mesh_file = "fichera.mesh";
+      mesh = new Mesh(mesh_file, 1, 1);
+      mesh->EnsureNodes();
+      GridFunction *nodes = mesh->GetNodes();
+      *nodes -= -1.0;
+   }
 
    dim = mesh->Dimension();
    compute_pml_mesh_data(mesh);
 
    int sdim = mesh->SpaceDimension();
 
-   // 4. Refine the serial mesh on all processors to increase the resolution. In
-   //    this example we do 'ref_levels' of uniform refinement. We choose
-   //    'ref_levels' to be the largest number that gives a final mesh with no
-   //    more than 1,000 elements.
+   // 4. Refine the serial mesh on all processors to increase the resolution. 
+   for (int l = 0; l < ref_levels; l++)
    {
-      //  (int)floor(log(1000. / mesh->GetNE()) / log(2.) / dim);
-      for (int l = 0; l < ref_levels; l++)
-      {
-         mesh->UniformRefinement();
-      }
+      mesh->UniformRefinement();
    }
 
    // 5. Define a parallel mesh by a partitioning of the serial mesh. Refine
@@ -191,12 +207,79 @@ int main(int argc, char *argv[])
    //    boundary dofs. In this example, the boundary conditions are defined
    //    by marking all the boundary attributes from the mesh as essential
    //    (Dirichlet) and converting them to a list of true dofs.
+
+   // Define the essential boundary
    Array<int> ess_tdof_list;
    Array<int> ess_bdr;
    if (pmesh->bdr_attributes.Size())
    {
       ess_bdr.SetSize(pmesh->bdr_attributes.Max());
-      ess_bdr = 1;
+      ess_bdr = 0;
+      if (prob == lshape)
+      {
+         for (int j = 0; j<pmesh->GetNBE(); j++)
+         {
+            Array<int> vertices;
+            pmesh->GetBdrElementVertices(j, vertices);
+            double *coords1 = pmesh->GetVertex(vertices[0]);
+            double *coords2 = pmesh->GetVertex(vertices[1]);
+            // if (coords1[1] == 0.0 && coords2[1] == 0.0)
+            // {
+            // }
+            // else
+            // {
+            //    int k = pmesh->GetBdrAttribute(j);
+            //    // cout << "k = " << k << endl;
+            //    ess_bdr[k-1]= 1;
+            // }
+            if ((coords1[0] == 1.0 && coords2[0] == 1.0) ||
+                (coords1[0] == 0.0 && coords2[0] == 0.0) ||
+                (coords1[1] == 1.0 && coords2[1] == 1.0) )//||
+               //  (coords1[0] == 3.0 && coords2[0] == 3.0) || 
+               //  (coords1[1] == 3.0 && coords2[1] == 3.0)  )
+            {
+               int k = pmesh->GetBdrAttribute(j);
+               ess_bdr[k-1]= 1;
+            }
+         }
+      }
+      else if (prob == fichera)
+      {
+         for (int j = 0; j<pmesh->GetNBE(); j++)
+         {
+            Array<int> vertices;
+            pmesh->GetBdrElementVertices(j, vertices);
+            double *coords1 = pmesh->GetVertex(vertices[0]);
+            double *coords2 = pmesh->GetVertex(vertices[1]);
+            double *coords3 = pmesh->GetVertex(vertices[2]);
+            double *coords4 = pmesh->GetVertex(vertices[3]);
+            // if ((coords1[1] == 0.0 && coords2[1] == 0.0 && coords3[1] == 0.0 && coords4[1] == 0.0) || 
+            //     (coords1[2] == 0.0 && coords2[2] == 0.0 && coords3[2] == 0.0 && coords4[2] == 0.0))
+            // {
+            // }
+            // else
+            // {
+            //    int k = pmesh->GetBdrAttribute(j);
+            //    ess_bdr[k-1]= 1;
+            // }
+            if ((coords1[0] == 0.0 && coords2[0] == 0.0 && coords3[0] == 0.0 && coords4[0] == 0.0) || 
+                (coords1[0] == 1.0 && coords2[0] == 1.0 && coords3[0] == 1.0 && coords4[0] == 1.0) || 
+                (coords1[1] == 1.0 && coords2[1] == 1.0 && coords3[1] == 1.0 && coords4[1] == 1.0) || 
+                (coords1[2] == 1.0 && coords2[2] == 1.0 && coords3[2] == 1.0 && coords4[2] == 1.0) )
+            {
+            }
+            else
+            {
+               int k = pmesh->GetBdrAttribute(j);
+               ess_bdr[k-1]= 1;
+            }
+
+         }
+      }
+      else
+      {
+         ess_bdr = 1;
+      }
       fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
    }
 
@@ -284,10 +367,11 @@ int main(int argc, char *argv[])
    a.RecoverFEMSolution(X, b, x);
 
    ParComplexGridFunction x_gf(fespace);
-   x_gf.ProjectCoefficient(E_Re, E_Im);
-
+   VectorFunctionCoefficient E_ex_Re(sdim, E_exact_Re);
+   VectorFunctionCoefficient E_ex_Im(sdim, E_exact_Im);
+   x_gf.ProjectCoefficient(E_ex_Re, E_ex_Im);
    // Compute error
-   if (prob == scatter || prob == waveguide)
+   if (prob == scatter || prob == waveguide || prob == lshape || prob == fichera)
    {
       int order_quad = max(2, 2 * order + 1);
       const IntegrationRule *irs[Geometry::NumGeom];
@@ -296,13 +380,13 @@ int main(int argc, char *argv[])
          irs[i] = &(IntRules.Get(i, order_quad));
       }
 
-      double L2Error_Re = x.real().ComputeL2Error(E_Re, irs, &elems_pml);
-      double L2Error_Im = x.imag().ComputeL2Error(E_Im, irs, &elems_pml);
+      double L2Error_Re = x.real().ComputeL2Error(E_ex_Re, irs, &elems_pml);
+      double L2Error_Im = x.imag().ComputeL2Error(E_ex_Im, irs, &elems_pml);
 
       ParComplexGridFunction x_gf0(fespace);
       x_gf0 = 0.0;
-      double norm_E_Re = x_gf0.real().ComputeL2Error(E_Re, irs, &elems_pml);
-      double norm_E_Im = x_gf0.imag().ComputeL2Error(E_Im, irs, &elems_pml);
+      double norm_E_Re = x_gf0.real().ComputeL2Error(E_ex_Re, irs, &elems_pml);
+      double norm_E_Im = x_gf0.imag().ComputeL2Error(E_ex_Im, irs, &elems_pml);
 
       if (myid == 0)
       {
@@ -329,20 +413,20 @@ int main(int argc, char *argv[])
       }
       char vishost[] = "localhost";
       int visport = 19916;
-      // socketstream src_sock_re(vishost, visport);
-      // src_sock_re << "parallel " << num_procs << " " << myid << "\n";
-      // src_sock_re.precision(8);
-      // src_sock_re << "solution\n"
-      //             << *pmesh << x_gf.real() << keys
-      //             << "window_title 'Source real part'" << flush;
+      socketstream src_sock_re(vishost, visport);
+      src_sock_re << "parallel " << num_procs << " " << myid << "\n";
+      src_sock_re.precision(8);
+      src_sock_re << "solution\n"
+                  << *pmesh << x_gf.real() << keys
+                  << "window_title 'Source real part'" << flush;
 
-      // MPI_Barrier(MPI_COMM_WORLD);
-      // socketstream src_sock_im(vishost, visport);
-      // src_sock_im << "parallel " << num_procs << " " << myid << "\n";
-      // src_sock_im.precision(8);
-      // src_sock_im << "solution\n"
-      //             << *pmesh << x_gf.imag() << keys
-      //             << "window_title 'Source imag part'" << flush;
+      MPI_Barrier(MPI_COMM_WORLD);
+      socketstream src_sock_im(vishost, visport);
+      src_sock_im << "parallel " << num_procs << " " << myid << "\n";
+      src_sock_im.precision(8);
+      src_sock_im << "solution\n"
+                  << *pmesh << x_gf.imag() << keys
+                  << "window_title 'Source imag part'" << flush;
 
       MPI_Barrier(MPI_COMM_WORLD);
       socketstream sol_sock_re(vishost, visport);
@@ -425,10 +509,6 @@ int main(int argc, char *argv[])
 
 void source_im(const Vector &x, Vector &f_im)
 {
-   // double x0 = 10.*x(0);
-   // double x1 = 10.*x(1);
-   // double r = sqrt(pow(x0- alpha, 2.) + pow(x1 - beta, 2.));
-
    Vector center(dim);
    double r = 0.0;
    for (int i=0; i<dim; ++ i) 
@@ -436,17 +516,10 @@ void source_im(const Vector &x, Vector &f_im)
       center(i) = 0.5*(  comp_domain_bdr(i,0) + comp_domain_bdr(i,1));
       r += pow(x[i]- center[i], 2.);
    }   
-
-   // f_im = 0.0;
-   // double coeff = 1000.0;
-   // f_im[0] = omega * exp(-coeff * r*r);
-
    double n = 5.0 * omega/M_PI;
    double coeff = pow(n,2)/M_PI;
    double alpha = - pow(n,2) * r;
-
    f_im[0] =  coeff * exp(alpha);
-
 }
 
 void compute_pml_mesh_data(Mesh *mesh)
@@ -488,6 +561,13 @@ void compute_pml_mesh_data(Mesh *mesh)
 
    pml_lngth.SetSize(dim, 2);
    comp_domain_bdr.SetSize(dim, 2);
+
+   for (int i = 0; i < dim; i++)
+   {
+      comp_domain_bdr(i, 0) = domain_bdr(i, 0);
+      comp_domain_bdr(i, 1) = domain_bdr(i, 1);
+   }
+
    if (prob == scatter || prob == load_src)
    {
       for (int i = 0; i < dim; i++)
@@ -502,34 +582,33 @@ void compute_pml_mesh_data(Mesh *mesh)
    }
    else if (prob == waveguide)
    {
-      for (int i = 0; i < dim; i++)
-      {
-         comp_domain_bdr(i, 0) = domain_bdr(i, 0);
-         comp_domain_bdr(i, 1) = domain_bdr(i, 1);
-      }
       // pml only in the x direction
       pml_lngth(0, 1) = 0.25 * (domain_bdr(0, 1) - domain_bdr(0, 0));
       comp_domain_bdr(0, 1) = domain_bdr(0, 1) - pml_lngth(0, 1);
    }
    else if (prob == cyl_waveguide)
    {
-      for (int i = 0; i < dim; i++)
-      {
-         comp_domain_bdr(i, 0) = domain_bdr(i, 0);
-         comp_domain_bdr(i, 1) = domain_bdr(i, 1);
-      }
       // pml only in the z direction
       pml_lngth(2, 1) = 0.125 * (domain_bdr(2, 1) - domain_bdr(2, 0));
       comp_domain_bdr(2, 1) = domain_bdr(2, 1) - pml_lngth(2, 1);
-
-      // pml only in the x direction
-      // pml_lngth(0,1) = 0.125 * (domain_bdr(0,1) - domain_bdr(0,0));
-      // pml_lngth(0,1) = 1.0;
-      // comp_domain_bdr(0,1) = domain_bdr(0,1) - pml_lngth(0,1);
+   }
+   else if (prob == lshape)
+   {
+      pml_lngth(0, 1) = 0.25 * (domain_bdr(0, 1) - domain_bdr(0, 0));
+      pml_lngth(1, 1) = 0.25 * (domain_bdr(1, 1) - domain_bdr(1, 0));
+      comp_domain_bdr(0, 1) = domain_bdr(0, 1) - pml_lngth(0, 1);
+      comp_domain_bdr(1, 1) = domain_bdr(1, 1) - pml_lngth(1, 1);
+   }
+   else if (prob == fichera)
+   {
+      pml_lngth(0, 1) = 0.25 * (domain_bdr(0, 1) - domain_bdr(0, 0));
+      pml_lngth(1, 1) = 0.25 * (domain_bdr(1, 1) - domain_bdr(1, 0));
+      pml_lngth(2, 1) = 0.25 * (domain_bdr(2, 1) - domain_bdr(2, 0));
+      comp_domain_bdr(0, 1) = domain_bdr(0, 1) - pml_lngth(0, 1);
+      comp_domain_bdr(1, 1) = domain_bdr(1, 1) - pml_lngth(1, 1);
+      comp_domain_bdr(2, 1) = domain_bdr(2, 1) - pml_lngth(2, 1);
    }
 
-   // comp_domain_bdr.Print();
-   // domain_bdr.Print();
 }
 
 void compute_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml)
@@ -633,7 +712,7 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
          E[1] = 1.0;
       }
    }
-   else if (prob == scatter) // point source (scattering)
+   else if (prob == scatter || prob == lshape || prob == fichera) // point source (scattering)
    {
       Vector shift(dim);
       shift = 0.0;
@@ -641,6 +720,9 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
       {
          shift(i) = -0.5 * (domain_bdr(i, 0) + domain_bdr(i, 1));
       }
+
+      if (prob == lshape) shift = 0.0;
+      if (prob == fichera) shift = 0.0;
 
       if (dim == 2)
       {
@@ -710,6 +792,28 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
    }
 }
 
+void E_exact_Re(const Vector &x, Vector &E)
+{
+   std::vector<std::complex<double>> Eval(E.Size());
+   maxwell_ess_data(x, Eval);
+   for (int i = 0; i < dim; ++i)
+   {
+      E[i] = Eval[i].real();
+   }
+}
+
+void E_exact_Im(const Vector &x, Vector &E)
+{
+   std::vector<std::complex<double>> Eval(E.Size());
+   maxwell_ess_data(x, Eval);
+   for (int i = 0; i < dim; ++i)
+   {
+      E[i] = Eval[i].imag();
+   }
+}
+
+
+
 void E_bdr_data_Re(const Vector &x, Vector &E)
 {
    // Initialize
@@ -727,6 +831,33 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
          }
       }
       if (!in_pml)
+      {
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+         {
+            E[i] = Eval[i].real();
+         }
+      }
+   }
+   else if (prob == lshape)
+   {
+      if ( (abs(x(0) - 1.0) < 1e-13 && x(1) < 1.0) || 
+           (abs(x(1) - 1.0) < 1e-13 && x(0) < 1.0) )
+      {
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+         {
+            E[i] = Eval[i].real();
+         }
+      }
+   }
+   else if (prob == fichera)
+   {
+      if ( (abs(x(0) - 1.0) < 1e-13 && x(1) < 1.0 && x(2) < 1.0 ) || 
+           (abs(x(1) - 1.0) < 1e-13 && x(0) < 1.0 && x(2) < 1.0 ) || 
+           (abs(x(2) - 1.0) < 1e-13 && x(0) < 1.0 && x(1) < 1.0 ) )
       {
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
@@ -788,6 +919,33 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
          }
       }
    }
+   else if (prob == lshape)
+   {
+      if ( (abs(x(0) - 1.0) < 1e-13 && x(1) < 1.0) || 
+           (abs(x(1) - 1.0) < 1e-13 && x(0) < 1.0) )
+      {
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+         {
+            E[i] = Eval[i].imag();
+         }
+      }
+   }
+   else if (prob == fichera)
+   {
+      if ( (abs(x(0) - 1.0) < 1e-13 && x(1) < 1.0 && x(2) < 1.0 ) || 
+           (abs(x(1) - 1.0) < 1e-13 && x(0) < 1.0 && x(2) < 1.0 ) || 
+           (abs(x(2) - 1.0) < 1e-13 && x(0) < 1.0 && x(1) < 1.0 ) )
+      {
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+         {
+            E[i] = Eval[i].imag();
+         }
+      }
+   }
    else if (prob == waveguide)
    {
       // waveguide problem
@@ -809,8 +967,6 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
       maxwell_ess_data(x, Eval);
       for (int i = 0; i < dim; ++i)
          E[i] = Eval[i].imag();
-
-      // if (abs(x(2)-domain_bdr(2,1)) < 1e-12) E = 0.0;
    }
 }
 
@@ -821,7 +977,7 @@ void pml_function(const Vector &x, std::vector<std::complex<double>> &dxs)
    std::complex<double> one = std::complex<double>(1., 0.);
 
    double n = 2.0;
-   double c = 10.0;
+   double c = 20.0;
    double coeff;
 
    // initialize to one
