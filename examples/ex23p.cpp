@@ -49,7 +49,7 @@ void pml_detJ_JT_J_inv_Im(const Vector &x, DenseMatrix &M);
 void pml_detJ_inv_JT_J_Re(const Vector &x, DenseMatrix &M);
 void pml_detJ_inv_JT_J_Im(const Vector &x, DenseMatrix &M);
 
-class pml
+class CartesianPML
 {
 private:
    Mesh *mesh;
@@ -60,17 +60,18 @@ public:
    Array2D<double> comp_domain_bdr;
    Array2D<double> length;
    Array<int> elems;
-   pml() {};
-   pml(Mesh *mesh_);
+   CartesianPML() {};
+   CartesianPML(Mesh *mesh_);
 
    // Set the pml length in each dimension. Size should be (dim,2)
    void compute_data();
    void SetMesh(Mesh *mesh_);
    void SetPmlLength(Array2D<double> &length_);
    void get_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml);
+   void exp_function(const Vector &x, std::vector<std::complex<double>> &dxs);
 };
 
-pml p;
+CartesianPML pml;
 double omega;
 int dim;
 
@@ -185,9 +186,9 @@ int main(int argc, char *argv[])
          break;
    }
 
-   p.SetMesh(mesh);
-   p.SetPmlLength(lngth);
-   p.compute_data();
+   pml.SetMesh(mesh);
+   pml.SetPmlLength(lngth);
+   pml.compute_data();
 
    // 4. Refine the serial mesh on all processors to increase the resolution.
    for (int l = 0; l < ref_levels; l++)
@@ -207,7 +208,7 @@ int main(int argc, char *argv[])
 
    pmesh->ReorientTetMesh();
    Array<int> elems_pml;
-   p.get_pml_elem_list(pmesh, elems_pml);
+   pml.get_pml_elem_list(pmesh, elems_pml);
 
    // 6. Define a parallel finite element space on the parallel mesh. Here we
    //    use the Nedelec finite elements of the specified order.
@@ -468,7 +469,7 @@ void source(const Vector &x, Vector &f)
    double r = 0.0;
    for (int i = 0; i < dim; ++i)
    {
-      center(i) = 0.5 * (p.comp_domain_bdr(i, 0) + p.comp_domain_bdr(i, 1));
+      center(i) = 0.5 * (pml.comp_domain_bdr(i, 0) + pml.comp_domain_bdr(i, 1));
       r += pow(x[i] - center[i], 2.);
    }
    double n = 5.0 * omega / M_PI;
@@ -505,8 +506,7 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
             // Bessel functions
             complex<double> Ho = jn(0, beta) + zi * yn(0, beta);
             complex<double> Ho_r = -omega * (jn(1, beta) + zi * yn(1, beta));
-            complex<double> Ho_rr = -omega * omega * (1.0 / beta * (jn(1, beta) + zi * yn(1,
-                                                                                          beta)) - (jn(2, beta) + zi * yn(2, beta)));
+            complex<double> Ho_rr = -omega * omega * (1.0 / beta * (jn(1, beta) + zi * yn(1, beta)) - (jn(2, beta) + zi * yn(2, beta)));
 
             // First derivatives
             double r_x = x0 / r;
@@ -599,8 +599,8 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
       for (int i = 0; i < dim; ++i)
       {
          // check if x(i) is in the computational domain or not
-         if (abs(x(i) - p.domain_bdr(i, 0)) < 1e-13 ||
-             abs(x(i) - p.domain_bdr(i, 1)) < 1e-13)
+         if (abs(x(i) - pml.domain_bdr(i, 0)) < 1e-13 ||
+             abs(x(i) - pml.domain_bdr(i, 1)) < 1e-13)
          {
             in_pml = true;
             break;
@@ -652,7 +652,7 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
       {
          E[i] = Eval[i].real();
       }
-      if (abs(x(0) - p.domain_bdr(0, 1)) < 1e-13)
+      if (abs(x(0) - pml.domain_bdr(0, 1)) < 1e-13)
       {
          E = 0.0;
       }
@@ -668,8 +668,8 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
    {
       for (int i = 0; i < dim; ++i)
       {
-         if (abs(x(i) - p.domain_bdr(i, 0)) < 1e-13 ||
-             abs(x(i) - p.domain_bdr(i, 1)) < 1e-13)
+         if (abs(x(i) - pml.domain_bdr(i, 0)) < 1e-13 ||
+             abs(x(i) - pml.domain_bdr(i, 1)) < 1e-13)
          {
             in_pml = true;
             break;
@@ -721,7 +721,7 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
       {
          E[i] = Eval[i].imag();
       }
-      if (abs(x(0) - p.domain_bdr(0, 1)) < 1e-13)
+      if (abs(x(0) - pml.domain_bdr(0, 1)) < 1e-13)
       {
          E = 0.0;
       }
@@ -729,7 +729,7 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
 }
 
 // PML
-void pml_function(const Vector &x, std::vector<std::complex<double>> &dxs)
+void CartesianPML:: exp_function(const Vector &x, std::vector<std::complex<double>> &dxs)
 {
    std::complex<double> zi = std::complex<double>(0., 1.);
    std::complex<double> one = std::complex<double>(1., 0.);
@@ -749,15 +749,15 @@ void pml_function(const Vector &x, std::vector<std::complex<double>> &dxs)
    {
       for (int j = 0; j < 2; ++j)
       {
-         if (x(i) >= p.comp_domain_bdr(i, 1))
+         if (x(i) >= pml.comp_domain_bdr(i, 1))
          {
-            coeff = n * c / omega / pow(p.length(i, 1), n);
-            dxs[i] = one + zi * coeff * abs(pow(x(i) - p.comp_domain_bdr(i, 1), n - 1.0));
+            coeff = n * c / omega / pow(pml.length(i, 1), n);
+            dxs[i] = one + zi * coeff * abs(pow(x(i) - pml.comp_domain_bdr(i, 1), n - 1.0));
          }
-         if (x(i) <= p.comp_domain_bdr(i, 0))
+         if (x(i) <= pml.comp_domain_bdr(i, 0))
          {
-            coeff = n * c / omega / pow(p.length(i, 0), n);
-            dxs[i] = one + zi * coeff * abs(pow(x(i) - p.comp_domain_bdr(i, 0), n - 1.0));
+            coeff = n * c / omega / pow(pml.length(i, 0), n);
+            dxs[i] = one + zi * coeff * abs(pow(x(i) - pml.comp_domain_bdr(i, 0), n - 1.0));
          }
       }
    }
@@ -768,7 +768,7 @@ double pml_detJ_inv_Re(const Vector &x)
    std::complex<double> one = std::complex<double>(1., 0.);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
    for (int i = 0; i < dim; ++i)
    {
       det *= dxs[i];
@@ -782,7 +782,7 @@ double pml_detJ_inv_Im(const Vector &x)
    std::complex<double> one = std::complex<double>(1., 0.);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
    for (int i = 0; i < dim; ++i)
    {
       det *= dxs[i];
@@ -797,7 +797,7 @@ void pml_detJ_JT_J_inv_Re(const Vector &x, DenseMatrix &M)
    std::vector<complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
    {
@@ -820,7 +820,7 @@ void pml_detJ_JT_J_inv_Im(const Vector &x, DenseMatrix &M)
    std::vector<std::complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det = 1.0;
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
    {
@@ -842,7 +842,7 @@ void pml_detJ_inv_JT_J_Re(const Vector &x, DenseMatrix &M)
    std::vector<complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
    {
@@ -863,7 +863,7 @@ void pml_detJ_inv_JT_J_Im(const Vector &x, DenseMatrix &M)
    std::vector<std::complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det = 1.0;
-   pml_function(x, dxs);
+   pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
    {
@@ -880,7 +880,7 @@ void pml_detJ_inv_JT_J_Im(const Vector &x, DenseMatrix &M)
    }
 }
 
-pml::pml(Mesh *mesh_) : mesh(mesh_)
+CartesianPML::CartesianPML(Mesh *mesh_) : mesh(mesh_)
 {
    //initialize to default values
    dim = mesh->Dimension();
@@ -890,7 +890,7 @@ pml::pml(Mesh *mesh_) : mesh(mesh_)
    domain_bdr.SetSize(dim, 2);
 }
 
-void pml::SetMesh(Mesh *mesh_)
+void CartesianPML::SetMesh(Mesh *mesh_)
 {
    mesh = mesh_;
    dim = mesh->Dimension();
@@ -900,7 +900,7 @@ void pml::SetMesh(Mesh *mesh_)
    domain_bdr.SetSize(dim, 2);
 }
 
-void pml::SetPmlLength(Array2D<double> &length_)
+void CartesianPML::SetPmlLength(Array2D<double> &length_)
 {
    // check dimensions
    MFEM_VERIFY(length_.NumRows() == dim, " Pml length NumRows missmatch ");
@@ -908,7 +908,7 @@ void pml::SetPmlLength(Array2D<double> &length_)
    length = length_;
 }
 
-void pml::compute_data()
+void CartesianPML::compute_data()
 {
    // initialize with any vertex
    for (int i = 0; i < dim; i++)
@@ -938,7 +938,7 @@ void pml::compute_data()
    }
 }
 
-void pml::get_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml)
+void CartesianPML::get_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml)
 {
    int nrelem = pmesh->GetNE();
    // initialize list with 1
