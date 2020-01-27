@@ -232,6 +232,18 @@ jobs:
         - cd $TRAVIS_BUILD_DIR/../metis-4.0;
           mv libmetis.a ..; rm -rf *; mv ../libmetis.a .
 
+    - stage: cmake
+      os: linux
+      name: "Linux: Parallel (cmake)"
+      addons:
+        apt:
+          packages:
+            - mpich
+            - libmpich-dev
+      env: MPI=YES
+      script:
+        - cd ${TRAVIS_BUILD_DIR}
+        - make config MFEM_USE_MPI=YES MFEM_MPI_NP=2
 
 before_install:
    # No addon for brew yet, have to install OSX packages this way.
