@@ -244,7 +244,10 @@ jobs:
       env: MPI=YES
       script:
         - cd ${TRAVIS_BUILD_DIR}
-        - make config MFEM_USE_MPI=YES MFEM_MPI_NP=2
+        - mkdir ${TRAVIS_BUILD_DIR}/build
+        - cd ${TRAVIS_BUILD_DIR}/build
+        - cmake .. -DMFEM_USE_MPI=ON -DHYPRE_DIR=${TRAVIS_BUILD_DIR}/../hypre-2.10.0b/src/hypre/ -DMETIS_DIR=${TRAVIS_BUILD_DIR}/../metis-4.0
+        # - make config MFEM_USE_MPI=YES MFEM_MPI_NP=2
       cache:
         directories:
           - $TRAVIS_BUILD_DIR/../hypre-2.10.0b/src/hypre/lib
