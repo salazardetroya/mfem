@@ -3,6 +3,7 @@ language: cpp
 sudo: false
 
 stages:
+  - cmake
   - checks
   - tests
   - optional
@@ -244,6 +245,14 @@ jobs:
       script:
         - cd ${TRAVIS_BUILD_DIR}
         - make config MFEM_USE_MPI=YES MFEM_MPI_NP=2
+      cache:
+        directories:
+          - $TRAVIS_BUILD_DIR/../hypre-2.10.0b/src/hypre/lib
+          - $TRAVIS_BUILD_DIR/../hypre-2.10.0b/src/hypre/include
+          - $TRAVIS_BUILD_DIR/../metis-4.0
+      before_cache:
+        - cd $TRAVIS_BUILD_DIR/../metis-4.0;
+          mv libmetis.a ..; rm -rf *; mv ../libmetis.a .
 
 before_install:
    # No addon for brew yet, have to install OSX packages this way.
