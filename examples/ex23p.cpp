@@ -33,8 +33,6 @@ using namespace mfem;
 #error This example requires that MFEM is built with MFEM_USE_SUPERLU=YES
 #endif
 
-// Exact solution, E, and r.h.s., f. See below for implementation.
-// void compute_pml_mesh_data(Mesh *mesh);
 void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &Eval);
 void E_bdr_data_Re(const Vector &x, Vector &E);
 void E_bdr_data_Im(const Vector &x, Vector &E);
@@ -54,7 +52,6 @@ class CartesianPML
 private:
    Mesh *mesh;
    int dim;
-
 public:
    Array2D<double> domain_bdr;
    Array2D<double> comp_domain_bdr;
@@ -160,7 +157,9 @@ int main(int argc, char *argv[])
    }
 
    mesh = new Mesh(mesh_file, 1, 1);
+
    dim = mesh->Dimension();
+
    Array2D<double> lngth(dim, 2);
    lngth = 0.0;
 
@@ -227,53 +226,26 @@ int main(int argc, char *argv[])
    if (pmesh->bdr_attributes.Size())
    {
       ess_bdr.SetSize(pmesh->bdr_attributes.Max());
-      ess_bdr = 0;
-      switch (prob)
+      ess_bdr = (prob == lshape || prob == fichera) ? 0 : 1;
+      for (int j = 0; j < pmesh->GetNBE(); j++)
       {
-         case lshape:
-            for (int j = 0; j < pmesh->GetNBE(); j++)
-            {
-               Array<int> vertices;
-               pmesh->GetBdrElementVertices(j, vertices);
-               double *coords1 = pmesh->GetVertex(vertices[0]);
-               double *coords2 = pmesh->GetVertex(vertices[1]);
-               int k = pmesh->GetBdrAttribute(j);
-               if ((coords1[0] == 1.0 && coords2[0] == 1.0) ||
-                   (coords1[0] == 0.0 && coords2[0] == 0.0) ||
-                   (coords1[1] == 1.0 && coords2[1] == 1.0))
-               {
-
+         Vector center(dim);
+         int bdrgeom = pmesh->GetBdrElementBaseGeometry(j);
+         ElementTransformation * trans = pmesh->GetBdrElementTransformation(j);   
+         trans->Transform(Geometries.GetCenter(bdrgeom),center);
+         int k = pmesh->GetBdrAttribute(j);
+         switch (prob)
+         {
+            case lshape:
+            if (center[0] == 1.0 || center[0] == 0.0 || center[1] == 1.0)
+                ess_bdr[k - 1] = 1;
+            break;
+            case fichera:
+            if (center[0] == -1.0 || center[0] == 0.0 || 
+                center[1] ==  0.0 || center[2] == 0.0)
                   ess_bdr[k - 1] = 1;
-               }
-            }
             break;
-         case fichera:
-            for (int j = 0; j < pmesh->GetNBE(); j++)
-            {
-               Array<int> vertices;
-               pmesh->GetBdrElementVertices(j, vertices);
-               double *coords1 = pmesh->GetVertex(vertices[0]);
-               double *coords2 = pmesh->GetVertex(vertices[1]);
-               double *coords3 = pmesh->GetVertex(vertices[2]);
-               double *coords4 = pmesh->GetVertex(vertices[3]);
-               int k = pmesh->GetBdrAttribute(j);
-
-               if ((coords1[0] == -1.0 && coords2[0] == -1.0 && coords3[0] == -1.0 &&
-                    coords4[0] == -1.0) ||
-                   (coords1[0] == 0.0 && coords2[0] == 0.0 && coords3[0] == 0.0 &&
-                    coords4[0] == 0.0) ||
-                   (coords1[1] == 0.0 && coords2[1] == 0.0 && coords3[1] == 0.0 &&
-                    coords4[1] == 0.0) ||
-                   (coords1[2] == 0.0 && coords2[2] == 0.0 && coords3[2] == 0.0 &&
-                    coords4[2] == 0.0))
-               {
-                  ess_bdr[k - 1] = 1;
-               }
-            }
-            break;
-         default:
-            ess_bdr = 1;
-            break;
+         }
       }
       fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
    }
@@ -310,19 +282,41 @@ int main(int argc, char *argv[])
    ScalarMatrixProductCoefficient pml_c2_Re(sigma, temp_c2_Re);
    ScalarMatrixProductCoefficient pml_c2_Im(sigma, temp_c2_Im);
 
+
+   Array<int> attr(pmesh->attributes.Max());
+
+   attr = 0; attr[0] = 1;
+   RestrictedCoefficient Restricted_muinv(muinv,attr);
+   RestrictedCoefficient Restricted_sigma(sigma,attr);
+
    ParSesquilinearForm a(fespace, ComplexOperator::HERMITIAN);
+
+   // Restricted coefficient to the computational domain
+   a.AddDomainIntegrator(new CurlCurlIntegrator(Restricted_muinv),NULL);
+   a.AddDomainIntegrator(new VectorFEMassIntegrator(Restricted_sigma),NULL);
+
+
+   attr = 0; attr[1] = 1;
+   // Restricted coefficients to the PML domain
    if (dim == 3)
    {
-      a.AddDomainIntegrator(new CurlCurlIntegrator(pml_c1_Re),
-                            new CurlCurlIntegrator(pml_c1_Im));
+      MatrixRestrictedCoefficient pml_coeff3D_Im(pml_c1_Im,attr);
+      MatrixRestrictedCoefficient pml_coeff3D_Re(pml_c1_Re,attr);
+      a.AddDomainIntegrator(new CurlCurlIntegrator(pml_coeff3D_Re),
+                            new CurlCurlIntegrator(pml_coeff3D_Im));
    }
    else
    {
-      a.AddDomainIntegrator(new CurlCurlIntegrator(det_inv_Re),
-                            new CurlCurlIntegrator(det_inv_Im));
+      RestrictedCoefficient pml_coeff2D_Im(det_inv_Im,attr);
+      RestrictedCoefficient pml_coeff2D_Re(det_inv_Re,attr);
+      a.AddDomainIntegrator(new CurlCurlIntegrator(pml_coeff2D_Re), 
+                            new CurlCurlIntegrator(pml_coeff2D_Im));
    }
-   a.AddDomainIntegrator(new VectorFEMassIntegrator(pml_c2_Re),
-                         new VectorFEMassIntegrator(pml_c2_Im));
+   MatrixRestrictedCoefficient pml_coeff_Im(pml_c2_Im,attr);
+   MatrixRestrictedCoefficient pml_coeff_Re(pml_c2_Re,attr);
+   a.AddDomainIntegrator(new VectorFEMassIntegrator(pml_coeff_Re), 
+                         new VectorFEMassIntegrator(pml_coeff_Im));     
+
    a.Assemble();
 
    OperatorHandle Ah;
@@ -465,23 +459,24 @@ int main(int argc, char *argv[])
 
 void source(const Vector &x, Vector &f)
 {
-   Vector center(dim);
+   double center;
    double r = 0.0;
    for (int i = 0; i < dim; ++i)
    {
-      center(i) = 0.5 * (pml.comp_domain_bdr(i, 0) + pml.comp_domain_bdr(i, 1));
-      r += pow(x[i] - center[i], 2.);
+      center = 0.5 * (pml.comp_domain_bdr(i, 0) + pml.comp_domain_bdr(i, 1));
+      r += pow(x[i] - center, 2.);
    }
    double n = 5.0 * omega / M_PI;
-   double coeff = pow(n, 2) / M_PI;
-   double alpha = -pow(n, 2) * r;
+   double coeff = n * n / M_PI;
+   double alpha = - n * n * r;
    f[0] = coeff * exp(alpha);
 }
 
 void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
 {
    // Initialize
-   for (int i = 0; i < dim; ++i) { E[i] = complex<double>(0., 0.); }
+   for (int i = 0; i < dim; ++i) 
+      E[i] = 0.0; 
 
    std::complex<double> zi = std::complex<double>(0., 1.);
 
@@ -541,7 +536,8 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
 
             val = exp(zi * omega * r) / r;
             val_r = val / r * (zi * omega * r - 1.0);
-            val_rr = val / (r * r) * (-omega * omega * r * r - 2.0 * zi * omega * r + 2.0);
+            val_rr = val / (r * r) * (-omega * omega * r * r 
+                                      -2.0 * zi * omega * r + 2.0);
             val_x = val_r * r_x;
             val_y = val_r * r_y;
             val_z = val_r * r_z;
@@ -559,9 +555,9 @@ void maxwell_ess_data(const Vector &x, std::vector<std::complex<double>> &E)
       }
       case waveguide:
       {
+          // T_10 mode
          double k10 = sqrt(omega * omega - M_PI * M_PI);
-         E[1] = -zi * omega / M_PI * sin(M_PI * x(2)) * exp(zi * k10 * x(
-                                                               0)); // T_10 mode
+         E[1] = -zi*omega/M_PI*sin(M_PI*x(2))*exp(zi * k10 * x(0));
          break;
       }
       default:
@@ -574,9 +570,7 @@ void E_exact_Re(const Vector &x, Vector &E)
    std::vector<std::complex<double>> Eval(E.Size());
    maxwell_ess_data(x, Eval);
    for (int i = 0; i < dim; ++i)
-   {
       E[i] = Eval[i].real();
-   }
 }
 
 void E_exact_Im(const Vector &x, Vector &E)
@@ -584,9 +578,7 @@ void E_exact_Im(const Vector &x, Vector &E)
    std::vector<std::complex<double>> Eval(E.Size());
    maxwell_ess_data(x, Eval);
    for (int i = 0; i < dim; ++i)
-   {
       E[i] = Eval[i].imag();
-   }
 }
 
 void E_bdr_data_Re(const Vector &x, Vector &E)
@@ -611,9 +603,7 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].real();
-         }
       }
    }
    else if (prob == lshape)
@@ -624,9 +614,7 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].real();
-         }
       }
    }
    else if (prob == fichera)
@@ -638,23 +626,18 @@ void E_bdr_data_Re(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].real();
-         }
       }
    }
    else if (prob == waveguide)
    {
       // waveguide problem
-      std::vector<std::complex<double>> Eval(E.Size());
-      maxwell_ess_data(x, Eval);
-      for (int i = 0; i < dim; ++i)
+      if (abs(x(0) - pml.domain_bdr(0, 1)) > 1e-13)
       {
-         E[i] = Eval[i].real();
-      }
-      if (abs(x(0) - pml.domain_bdr(0, 1)) < 1e-13)
-      {
-         E = 0.0;
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+            E[i] = Eval[i].real();
       }
    }
 }
@@ -680,9 +663,7 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].imag();
-         }
       }
    }
    else if (prob == lshape)
@@ -693,9 +674,7 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].imag();
-         }
       }
    }
    else if (prob == fichera)
@@ -707,32 +686,25 @@ void E_bdr_data_Im(const Vector &x, Vector &E)
          std::vector<std::complex<double>> Eval(E.Size());
          maxwell_ess_data(x, Eval);
          for (int i = 0; i < dim; ++i)
-         {
             E[i] = Eval[i].imag();
-         }
       }
    }
    else if (prob == waveguide)
    {
-      // waveguide problem
-      std::vector<std::complex<double>> Eval(E.Size());
-      maxwell_ess_data(x, Eval);
-      for (int i = 0; i < dim; ++i)
+      if (abs(x(0) - pml.domain_bdr(0, 1)) > 1e-13)
       {
-         E[i] = Eval[i].imag();
-      }
-      if (abs(x(0) - pml.domain_bdr(0, 1)) < 1e-13)
-      {
-         E = 0.0;
+         std::vector<std::complex<double>> Eval(E.Size());
+         maxwell_ess_data(x, Eval);
+         for (int i = 0; i < dim; ++i)
+            E[i] = Eval[i].imag();
       }
    }
 }
 
 // PML
-void CartesianPML:: exp_function(const Vector &x, std::vector<std::complex<double>> &dxs)
+void CartesianPML::exp_function(const Vector &x, std::vector<std::complex<double>> &dxs)
 {
    std::complex<double> zi = std::complex<double>(0., 1.);
-   std::complex<double> one = std::complex<double>(1., 0.);
 
    double n = 2.0;
    double c = 5.0;
@@ -740,24 +712,22 @@ void CartesianPML:: exp_function(const Vector &x, std::vector<std::complex<doubl
 
    // initialize to one
    for (int i = 0; i < dim; ++i)
-   {
-      dxs[i] = one;
-   }
+      dxs[i] = 1.0;
 
    // Stretch in each direction independenly
    for (int i = 0; i < dim; ++i)
    {
       for (int j = 0; j < 2; ++j)
       {
-         if (x(i) >= pml.comp_domain_bdr(i, 1))
+         if (x(i) >= comp_domain_bdr(i, 1))
          {
-            coeff = n * c / omega / pow(pml.length(i, 1), n);
-            dxs[i] = one + zi * coeff * abs(pow(x(i) - pml.comp_domain_bdr(i, 1), n - 1.0));
+            coeff = n * c / omega / pow(length(i, 1), n);
+            dxs[i] = 1.0 + zi * coeff * abs(pow(x(i) - comp_domain_bdr(i, 1), n - 1.0));
          }
-         if (x(i) <= pml.comp_domain_bdr(i, 0))
+         if (x(i) <= comp_domain_bdr(i, 0))
          {
-            coeff = n * c / omega / pow(pml.length(i, 0), n);
-            dxs[i] = one + zi * coeff * abs(pow(x(i) - pml.comp_domain_bdr(i, 0), n - 1.0));
+            coeff = n * c / omega / pow(length(i, 0), n);
+            dxs[i] = 1.0 + zi * coeff * abs(pow(x(i) - comp_domain_bdr(i, 0), n - 1.0));
          }
       }
    }
@@ -765,78 +735,56 @@ void CartesianPML:: exp_function(const Vector &x, std::vector<std::complex<doubl
 
 double pml_detJ_inv_Re(const Vector &x)
 {
-   std::complex<double> one = std::complex<double>(1., 0.);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
    pml.exp_function(x, dxs);
-   for (int i = 0; i < dim; ++i)
-   {
+   for (int i = 0; i < dim; ++i) 
       det *= dxs[i];
-   }
 
-   complex<double> det_inv = one / det;
-   return det_inv.real();
+   return (1.0 / det).real();
 }
+
 double pml_detJ_inv_Im(const Vector &x)
 {
-   std::complex<double> one = std::complex<double>(1., 0.);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
    pml.exp_function(x, dxs);
-   for (int i = 0; i < dim; ++i)
-   {
+   for (int i = 0; i < dim; ++i) 
       det *= dxs[i];
-   }
 
-   complex<double> det_inv = one / det;
-   return det_inv.imag();
+   return (1.0 / det).imag();
 }
+
 void pml_detJ_JT_J_inv_Re(const Vector &x, DenseMatrix &M)
 {
-   std::complex<double> one = std::complex<double>(1., 0.);
-   std::vector<complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det(1.0, 0.0);
    pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
-   {
-      diag[i] = one / pow(dxs[i], 2);
       det *= dxs[i];
-   }
 
-   M.SetSize(dim);
-   M = 0.0;
+   M.SetSize(dim);  M = 0.0;
 
-   for (int i = 0; i < dim; ++i)
-   {
-      complex<double> temp = det * diag[i];
-      M(i, i) = temp.real();
-   }
+   for (int i = 0; i < dim; ++i) 
+      M(i, i) = (det / (dxs[i]*dxs[i])).real();
 }
+
 void pml_detJ_JT_J_inv_Im(const Vector &x, DenseMatrix &M)
 {
-   std::complex<double> one = std::complex<double>(1., 0.);
-   std::vector<std::complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det = 1.0;
    pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
-   {
-      diag[i] = one / pow(dxs[i], 2);
       det *= dxs[i];
-   }
 
-   M.SetSize(dim);
-   M = 0.0;
+   M.SetSize(dim); M = 0.0;
 
-   for (int i = 0; i < dim; ++i)
-   {
-      complex<double> temp = det * diag[i];
-      M(i, i) = temp.imag();
-   }
+   for (int i = 0; i < dim; ++i) 
+      M(i, i) = (det / (dxs[i]*dxs[i])).imag();
 }
+
 void pml_detJ_inv_JT_J_Re(const Vector &x, DenseMatrix &M)
 {
    std::vector<complex<double>> diag(dim);
@@ -845,39 +793,27 @@ void pml_detJ_inv_JT_J_Re(const Vector &x, DenseMatrix &M)
    pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
-   {
-      diag[i] = pow(dxs[i], 2);
       det *= dxs[i];
-   }
 
-   M.SetSize(dim);
-   M = 0.0;
-   for (int i = 0; i < dim; ++i)
-   {
-      complex<double> temp = diag[i] / det;
-      M(i, i) = temp.real();
-   }
+   M.SetSize(dim); M = 0.0;
+
+   for (int i = 0; i < dim; ++i) 
+      M(i, i) = (dxs[i] * dxs[i] / det).real();
 }
+
 void pml_detJ_inv_JT_J_Im(const Vector &x, DenseMatrix &M)
 {
-   std::vector<std::complex<double>> diag(dim);
    std::vector<std::complex<double>> dxs(dim);
    complex<double> det = 1.0;
    pml.exp_function(x, dxs);
 
    for (int i = 0; i < dim; ++i)
-   {
-      diag[i] = pow(dxs[i], 2);
       det *= dxs[i];
-   }
 
-   M.SetSize(dim);
-   M = 0.0;
-   for (int i = 0; i < dim; ++i)
-   {
-      complex<double> temp = diag[i] / det;
-      M(i, i) = temp.imag();
-   }
+   M.SetSize(dim); M = 0.0;
+
+   for (int i = 0; i < dim; ++i) 
+      M(i, i) = (dxs[i] * dxs[i] / det).imag();
 }
 
 CartesianPML::CartesianPML(Mesh *mesh_) : mesh(mesh_)
@@ -931,6 +867,7 @@ void CartesianPML::compute_data()
          }
       }
    }
+
    for (int i = 0; i < dim; i++)
    {
       comp_domain_bdr(i, 0) = domain_bdr(i, 0) + length(i, 0);
@@ -947,9 +884,12 @@ void CartesianPML::get_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml)
    // loop through the elements and identify which of them are in the pml
    for (int i = 0; i < nrelem; ++i)
    {
+      bool in_pml = false;
       Element *el = pmesh->GetElement(i);
       Array<int> vertices;
       el->GetVertices(vertices);
+      // Initialize Attribute
+      el->SetAttribute(1);
       int nrvert = vertices.Size();
       // Check if any vertex is in the pml
       for (int iv = 0; iv < nrvert; ++iv)
@@ -961,9 +901,16 @@ void CartesianPML::get_pml_elem_list(ParMesh *pmesh, Array<int> &elem_pml)
             if (coords[comp] > comp_domain_bdr(comp, 1) ||
                 coords[comp] < comp_domain_bdr(comp, 0))
             {
-               elem_pml[i] = 0;
+               in_pml = true;
+               break;
             }
          }
       }
+      if (in_pml) 
+      {
+         elem_pml[i] = 0;
+         el->SetAttribute(2);
+      }
    }
+   pmesh->SetAttributes();
 }
